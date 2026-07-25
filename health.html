@@ -259,8 +259,8 @@
 
     var checks = { api: false, db: false, data: null };
 
-    // 1. Check REST API
-    fetch(SUPABASE_URL + '/rest/v1/', {
+    // 1. Check REST API (ใช้ตาราง templates แทน root endpoint)
+    fetch(SUPABASE_URL + '/rest/v1/templates?select=id&limit=1', {
       headers: {
         'apikey': SUPABASE_ANON_KEY,
         'Authorization': 'Bearer ' + SUPABASE_ANON_KEY
