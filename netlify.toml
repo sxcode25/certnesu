@@ -8,7 +8,6 @@
 # ═══════════════════════════════════════════════════════════════════════
 # GAS Proxy → Google Apps Script (เฉพาะ Google Drive operations)
 # ═══════════════════════════════════════════════════════════════════════
-# ⚠️ แทนที่ YOUR_DEPLOYMENT_ID ด้วย Deployment ID ของ GAS Web App
 # Auth + CRUD ใช้ Supabase ตรง (ไม่ผ่าน proxy)
 # เฉพาะ upload/download ไฟล์ Drive ยังใช้ GAS
 
@@ -17,16 +16,6 @@
   to = "https://script.google.com/macros/s/AKfycbwmLI7XIgrIc-foqX2xaJAzPoGpSI7BD-LhHLJ1znLYWh0kqg7aepLb0dmr4zLxseYQ/exec"
   status = 200
   force = true
-
-# ═══════════════════════════════════════════════════════════════════════
-# SPA Fallback — ส่ง 404 ไปที่ index.html
-# ═══════════════════════════════════════════════════════════════════════
-
-[[redirects]]
-  from = "/*"
-  to = "/index.html"
-  status = 200
-  conditions = {Role = ["admin"]}
 
 # ═══════════════════════════════════════════════════════════════════════
 # Cache Control สำหรับ Static Assets
