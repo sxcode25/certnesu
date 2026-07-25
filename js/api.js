@@ -244,7 +244,7 @@ var api = {
         return _mapRecordFromDb(row, idx);
       });
 
-      return { status: true, records: records };
+      return { status: true, records: records, data: records };
     });
   },
 
@@ -426,9 +426,13 @@ var api = {
         }
         var templates = (response.data || []).map(function(t) {
           return {
+            template_id: t.id,
             id: t.id,
+            template_name: t.name,
             name: t.name,
+            number_prefix: t.number_prefix || '',
             prefix: t.number_prefix || '',
+            drive_file_id: t.drive_file_id || '',
             driveFileId: t.drive_file_id || ''
           };
         });
@@ -437,7 +441,6 @@ var api = {
   },
 
   getTemplateListWithCounts: function() {
-    // Use RPC switch_template_context is too heavy. Query templates + count separately.
     return _getSupabase()
       .from('templates')
       .select('id, name, number_prefix, drive_file_id')
@@ -456,10 +459,14 @@ var api = {
             .eq('template_id', t.id)
             .then(function(r) {
               return {
+                template_id: t.id,
                 id: t.id,
+                template_name: t.name,
                 name: t.name,
+                number_prefix: t.number_prefix || '',
                 prefix: t.number_prefix || '',
                 recordCount: r.count || 0,
+                drive_file_id: t.drive_file_id || '',
                 driveFileId: t.drive_file_id || ''
               };
             });
