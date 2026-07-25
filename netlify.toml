@@ -13,7 +13,7 @@
 
 [[redirects]]
   from = "/gas-api"
-  to = "https://script.google.com/macros/s/AKfycbwmLI7XIgrIc-foqX2xaJAzPoGpSI7BD-LhHLJ1znLYWh0kqg7aepLb0dmr4zLxseYQ/exec"
+  to = "https://script.google.com/macros/s/AKfycbz-_6Zosfehi6tQubG_zSyHYvY0BRLF8QmiMXi_p-lK3V3Yn7GGuRTOny1VzS5XNS3v/exec"
   status = 200
   force = true
 
