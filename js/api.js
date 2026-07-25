@@ -75,8 +75,10 @@ var api = {
           // Log login (silent)
           _getSupabase().from('login_logs').insert({
             user_id: user.id,
+            username: userData.username,
             action: 'login',
-            user_agent: navigator.userAgent.substring(0, 255)
+            status: 'success',
+            note: navigator.userAgent.substring(0, 255)
           }).then(function(){}).catch(function(){});
 
           return {
@@ -481,11 +483,24 @@ var api = {
         if (!data || !data.config) {
           return { status: false, message: 'ไม่พบ template' };
         }
+
+        // Map DB field names → core.js expected names
+        var cfg = data.config;
+        var config = {
+          template_id: cfg.id,
+          template_name: cfg.name,
+          drive_file_id: cfg.drive_file_id || '',
+          elements: cfg.elements || [],
+          canvas_width: cfg.canvas_width || 3508,
+          canvas_height: cfg.canvas_height || 2480,
+          number_prefix: cfg.number_prefix || ''
+        };
+
         return {
           status: true,
-          template: data.config,
+          config: config,
           stats: data.stats,
-          records: data.data || [],
+          data: null,  // core.js checks result.data.status
           schools: data.schools || [],
           total: data.total || 0
         };
