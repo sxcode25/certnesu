@@ -248,6 +248,28 @@ var api = {
     });
   },
 
+  // getAllRecords with optional limit (canvas preview uses limit)
+  getAllRecordsLimited: function(limit) {
+    var templateId = AppState.activeTemplateId;
+    var query = _getSupabase()
+      .from('records')
+      .select('*')
+      .order('created_at', { ascending: true });
+
+    if (templateId) query = query.eq('template_id', templateId);
+    if (limit) query = query.limit(limit);
+
+    return query.then(function(response) {
+      if (response.error) {
+        return { status: false, message: response.error.message, records: [], data: [] };
+      }
+      var records = (response.data || []).map(function(row, idx) {
+        return _mapRecordFromDb(row, idx);
+      });
+      return { status: true, records: records, data: records };
+    });
+  },
+
   addRecord: function(record) {
     var dbRecord = _mapRecordToDb(record);
     dbRecord.template_id = AppState.activeTemplateId;
@@ -441,40 +463,41 @@ var api = {
   },
 
   getTemplateListWithCounts: function() {
+    // ✅ ใช้ View templates_with_counts (1 query แทน N+1 queries)
     return _getSupabase()
-      .from('templates')
-      .select('id, name, number_prefix, drive_file_id')
+      .from('templates_with_counts')
+      .select('id, name, number_prefix, drive_file_id, record_count')
       .order('name')
       .then(function(response) {
         if (response.error) {
-          return { status: false, templates: [] };
-        }
-        var templates = response.data || [];
-
-        // Count records per template
-        var countPromises = templates.map(function(t) {
+          // Fallback: ถ้า view ไม่มี ใช้ templates ตรง
           return _getSupabase()
-            .from('records')
-            .select('id', { count: 'exact', head: true })
-            .eq('template_id', t.id)
-            .then(function(r) {
-              return {
-                template_id: t.id,
-                id: t.id,
-                template_name: t.name,
-                name: t.name,
-                number_prefix: t.number_prefix || '',
-                prefix: t.number_prefix || '',
-                recordCount: r.count || 0,
-                drive_file_id: t.drive_file_id || '',
-                driveFileId: t.drive_file_id || ''
-              };
+            .from('templates')
+            .select('id, name, number_prefix, drive_file_id')
+            .order('name')
+            .then(function(r2) {
+              var templates = (r2.data || []).map(function(t) {
+                return {
+                  template_id: t.id, id: t.id,
+                  template_name: t.name, name: t.name,
+                  number_prefix: t.number_prefix || '', prefix: t.number_prefix || '',
+                  recordCount: 0, record_count: 0,
+                  drive_file_id: t.drive_file_id || '', driveFileId: t.drive_file_id || ''
+                };
+              });
+              return { status: true, templates: templates };
             });
+        }
+        var templates = (response.data || []).map(function(t) {
+          return {
+            template_id: t.id, id: t.id,
+            template_name: t.name, name: t.name,
+            number_prefix: t.number_prefix || '', prefix: t.number_prefix || '',
+            recordCount: t.record_count || 0, record_count: t.record_count || 0,
+            drive_file_id: t.drive_file_id || '', driveFileId: t.drive_file_id || ''
+          };
         });
-
-        return Promise.all(countPromises).then(function(results) {
-          return { status: true, templates: results };
-        });
+        return { status: true, templates: templates };
       });
   },
 
@@ -640,8 +663,9 @@ var api = {
   // 📤 EXPORT & DRIVE — GAS Web App (Google Drive)
   // ═══════════════════════════════════════════════════════════════════════
 
-  _callGAS: function(action, params) {
+  _callGAS: function(action, params, _retryCount) {
     params = params || {};
+    _retryCount = _retryCount || 0;
     var body = { action: action };
     for (var key in params) {
       if (params.hasOwnProperty(key)) body[key] = params[key];
@@ -658,7 +682,15 @@ var api = {
         body: JSON.stringify(body)
       })
       .then(function(response) {
-        if (!response.ok) throw new Error('HTTP Error ' + response.status);
+        if (!response.ok) {
+          // Retry สูงสุด 1 ครั้ง สำหรับ server error
+          if (response.status >= 500 && _retryCount < 1) {
+            console.warn('GAS retry #' + (_retryCount + 1) + ' for ' + action);
+            return new Promise(function(resolve) { setTimeout(resolve, 1000); })
+              .then(function() { return api._callGAS(action, params, _retryCount + 1); });
+          }
+          throw new Error('Google Drive เชื่อมต่อไม่สำเร็จ (HTTP ' + response.status + ') — ตรวจสอบ GAS Deployment');
+        }
         return response.json();
       });
     });
