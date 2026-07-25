@@ -5,9 +5,13 @@
  * ✅ Backward Compatible — core.js, canvas.js, export.js ไม่ต้องแก้!
  *    ยังเรียก api.loginUser(), api.getData() ฯลฯ เหมือนเดิม
  *
- * Architecture:
- *   Auth + CRUD → Supabase (supabase-js)
- *   File Upload  → GAS Web App (Google Drive API)
+ * DB Schema (ตรงกับ Setup.gs):
+ *   templates: id, name, drive_file_id, elements, canvas_width, canvas_height, number_prefix
+ *   records:   id, template_id, name, school, cert_number, cert_date, signer, position,
+ *              extra1-5, status, drive_file_url
+ *   settings:  key, value, description
+ *   export_logs: id, user_id, username, action, record_count, status, note
+ *   login_logs:  id, user_id, action, ip_address, user_agent
  * =========================================================================
  */
 
@@ -35,12 +39,8 @@ var api = {
   // 🔐 AUTHENTICATION — Supabase Auth
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * เข้าสู่ระบบ (รองรับทั้ง email และ username)
-   */
   loginUser: function(username, password) {
     var email = username;
-    // ถ้าไม่ใช่ email → ต่อ @cert.local
     if (email.indexOf('@') === -1) {
       email = email + '@cert.local';
     }
@@ -57,7 +57,6 @@ var api = {
       var user = response.data.user;
       var session = response.data.session;
 
-      // ดึง profile จาก user_profiles
       return _getSupabase()
         .from('user_profiles')
         .select('display_name, role')
@@ -73,8 +72,12 @@ var api = {
             userId: user.id
           };
 
-          // Log login
-          _logLoginActivity(user.id, userData.username);
+          // Log login (silent)
+          _getSupabase().from('login_logs').insert({
+            user_id: user.id,
+            action: 'login',
+            user_agent: navigator.userAgent.substring(0, 255)
+          }).then(function(){}).catch(function(){});
 
           return {
             status: true,
@@ -90,9 +93,6 @@ var api = {
 
   login: function(username, password) { return api.loginUser(username, password); },
 
-  /**
-   * ตรวจสอบ Session
-   */
   checkSession: function() {
     return _getSupabase().auth.getSession()
       .then(function(response) {
@@ -126,44 +126,28 @@ var api = {
       });
   },
 
-  /**
-   * ออกจากระบบ
-   */
   logoutUser: function() {
     return _getSupabase().auth.signOut()
-      .then(function() {
-        return { status: true };
-      })
-      .catch(function(err) {
-        return { status: false, message: err.message };
-      });
+      .then(function() { return { status: true }; })
+      .catch(function(err) { return { status: false, message: err.message }; });
   },
 
   logout: function() { return api.logoutUser(); },
 
-  /**
-   * เปลี่ยนรหัสผ่าน
-   */
   changePassword: function(oldPassword, newPassword) {
-    // Supabase updateUser ไม่ต้องใช้ old password (ใช้ session)
-    // แต่เพื่อความปลอดภัย เราจะ verify ก่อน
     return _getSupabase().auth.getUser()
       .then(function(userRes) {
         if (userRes.error) throw userRes.error;
         var email = userRes.data.user.email;
 
-        // Verify old password
         return _getSupabase().auth.signInWithPassword({ email: email, password: oldPassword })
           .then(function(loginRes) {
             if (loginRes.error) {
               return { status: false, message: 'รหัสผ่านเดิมไม่ถูกต้อง' };
             }
-            // Update password
             return _getSupabase().auth.updateUser({ password: newPassword })
               .then(function(updateRes) {
-                if (updateRes.error) {
-                  return { status: false, message: updateRes.error.message };
-                }
+                if (updateRes.error) return { status: false, message: updateRes.error.message };
                 return { status: true, message: 'เปลี่ยนรหัสผ่านสำเร็จ' };
               });
           });
@@ -176,11 +160,10 @@ var api = {
 
   // ═══════════════════════════════════════════════════════════════════════
   // 📋 DATA CRUD — Supabase PostgREST
+  // DB columns: id, template_id, name, school, cert_number, cert_date,
+  //             signer, position, extra1-5, status, drive_file_url
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * ดึงข้อมูล records (pagination + sort + search)
-   */
   getData: function(options) {
     options = options || {};
     var page = options.page || 1;
@@ -194,24 +177,21 @@ var api = {
       .from('records')
       .select('*', { count: 'exact' });
 
-    // Filter by template
     if (templateId) {
       query = query.eq('template_id', templateId);
     }
 
-    // Search
     if (search) {
       query = query.or(
-        'prefix_number.ilike.%' + search + '%,' +
-        'full_name.ilike.%' + search + '%,' +
-        'school_name.ilike.%' + search + '%,' +
+        'name.ilike.%' + search + '%,' +
+        'school.ilike.%' + search + '%,' +
         'cert_number.ilike.%' + search + '%'
       );
     }
 
-    // Sort mapping (column index → column name)
-    var sortColumns = ['row_number', 'prefix_number', 'full_name', 'school_name', 'cert_number', 'cert_status', 'created_at'];
-    var sortCol = sortColumns[sortBy] || 'row_number';
+    // Sort mapping (column index → DB column)
+    var sortColumns = ['created_at', 'cert_number', 'name', 'school', 'cert_number', 'status', 'created_at'];
+    var sortCol = sortColumns[sortBy] || 'created_at';
     query = query.order(sortCol, { ascending: sortDir === 'asc' });
 
     // Pagination
@@ -227,7 +207,7 @@ var api = {
       var totalRecords = response.count || 0;
       var totalPages = Math.ceil(totalRecords / perPage);
 
-      // Map to old format
+      // Map DB → frontend format (backward compatible)
       var records = (response.data || []).map(function(row, idx) {
         return _mapRecordFromDb(row, from + idx);
       });
@@ -242,15 +222,12 @@ var api = {
     });
   },
 
-  /**
-   * ดึงข้อมูลทั้งหมด (ไม่แบ่งหน้า)
-   */
   getAllRecords: function() {
     var templateId = AppState.activeTemplateId;
     var query = _getSupabase()
       .from('records')
       .select('*')
-      .order('row_number', { ascending: true });
+      .order('created_at', { ascending: true });
 
     if (templateId) {
       query = query.eq('template_id', templateId);
@@ -269,9 +246,6 @@ var api = {
     });
   },
 
-  /**
-   * เพิ่ม record ใหม่
-   */
   addRecord: function(record) {
     var dbRecord = _mapRecordToDb(record);
     dbRecord.template_id = AppState.activeTemplateId;
@@ -289,9 +263,6 @@ var api = {
       });
   },
 
-  /**
-   * แก้ไข record (รองรับทั้ง rowIndex และ id)
-   */
   editRecord: function(rowIndex, record) {
     var dbRecord = _mapRecordToDb(record);
     var recordId = record.id || record.recordId;
@@ -300,72 +271,72 @@ var api = {
     if (recordId) {
       query = _getSupabase().from('records').update(dbRecord).eq('id', recordId);
     } else {
-      // Fallback: ใช้ rowIndex (หา record จาก position)
-      query = _getSupabase().from('records').update(dbRecord)
-        .eq('template_id', AppState.activeTemplateId)
-        .eq('row_number', rowIndex);
-    }
-
-    return query.select().single()
-      .then(function(response) {
-        if (response.error) {
-          return { status: false, message: response.error.message };
+      // Fallback: ใช้ rowIndex → ดึง record จาก offset
+      return api.getAllRecords().then(function(res) {
+        if (res.records && res.records[rowIndex]) {
+          var id = res.records[rowIndex].id;
+          return _getSupabase().from('records').update(dbRecord).eq('id', id)
+            .then(function(r) {
+              if (r.error) return { status: false, message: r.error.message };
+              return { status: true, message: 'แก้ไขข้อมูลสำเร็จ' };
+            });
         }
-        return { status: true, message: 'แก้ไขข้อมูลสำเร็จ' };
+        return { status: false, message: 'ไม่พบ record' };
       });
-  },
-
-  /**
-   * ลบ records (รองรับ array ของ id หรือ rowIndex)
-   */
-  deleteRecords: function(rowIndexes) {
-    if (!Array.isArray(rowIndexes)) rowIndexes = [rowIndexes];
-
-    // ถ้าเป็น UUID → ลบ by id ตรง, ถ้าเป็นตัวเลข → ลบ by row_number
-    var isUuid = rowIndexes[0] && String(rowIndexes[0]).indexOf('-') !== -1;
-
-    var query;
-    if (isUuid) {
-      query = _getSupabase().from('records').delete().in('id', rowIndexes);
-    } else {
-      query = _getSupabase().from('records').delete()
-        .eq('template_id', AppState.activeTemplateId)
-        .in('row_number', rowIndexes);
     }
 
     return query.then(function(response) {
       if (response.error) {
         return { status: false, message: response.error.message };
       }
-      return { status: true, message: 'ลบข้อมูลสำเร็จ ' + rowIndexes.length + ' รายการ' };
+      return { status: true, message: 'แก้ไขข้อมูลสำเร็จ' };
     });
   },
 
-  /**
-   * นำเข้าข้อมูล
-   */
+  deleteRecords: function(rowIndexes) {
+    if (!Array.isArray(rowIndexes)) rowIndexes = [rowIndexes];
+
+    // ถ้าเป็น UUID → ลบ by id ตรง
+    var isUuid = rowIndexes[0] && String(rowIndexes[0]).indexOf('-') !== -1;
+
+    if (isUuid) {
+      return _getSupabase().from('records').delete().in('id', rowIndexes)
+        .then(function(response) {
+          if (response.error) return { status: false, message: response.error.message };
+          return { status: true, message: 'ลบข้อมูลสำเร็จ ' + rowIndexes.length + ' รายการ' };
+        });
+    }
+
+    // Fallback: rowIndex → ต้องหา id ก่อน
+    return api.getAllRecords().then(function(res) {
+      var ids = rowIndexes.map(function(idx) {
+        return res.records && res.records[idx] ? res.records[idx].id : null;
+      }).filter(Boolean);
+
+      if (ids.length === 0) return { status: false, message: 'ไม่พบ record' };
+
+      return _getSupabase().from('records').delete().in('id', ids)
+        .then(function(response) {
+          if (response.error) return { status: false, message: response.error.message };
+          return { status: true, message: 'ลบข้อมูลสำเร็จ ' + ids.length + ' รายการ' };
+        });
+    });
+  },
+
   importData: function(jsonData, mode) {
     var data = typeof jsonData === 'string' ? JSON.parse(jsonData) : jsonData;
     var templateId = AppState.activeTemplateId;
 
-    // mode: 'append' หรือ 'replace'
     var promise = Promise.resolve();
-
     if (mode === 'replace') {
-      // ลบข้อมูลเดิมก่อน
-      promise = _getSupabase()
-        .from('records')
-        .delete()
-        .eq('template_id', templateId)
+      promise = _getSupabase().from('records').delete().eq('template_id', templateId)
         .then(function() {});
     }
 
     return promise.then(function() {
-      // เตรียมข้อมูลสำหรับ insert
-      var records = data.map(function(row, idx) {
+      var records = data.map(function(row) {
         var dbRecord = _mapRecordToDb(row);
         dbRecord.template_id = templateId;
-        dbRecord.row_number = idx + 1;
         return dbRecord;
       });
 
@@ -390,9 +361,6 @@ var api = {
     });
   },
 
-  /**
-   * รับเลขที่เกียรติบัตรถัดไป
-   */
   getNextCertNumber: function() {
     var templateId = AppState.activeTemplateId;
     return _getSupabase()
@@ -400,6 +368,7 @@ var api = {
       .select('cert_number')
       .eq('template_id', templateId)
       .not('cert_number', 'is', null)
+      .neq('cert_number', '')
       .order('cert_number', { ascending: false })
       .limit(1)
       .then(function(response) {
@@ -412,26 +381,18 @@ var api = {
       });
   },
 
-  /**
-   * อัปเดตสถานะ cert (batch)
-   */
   batchUpdateCertStatus: function(results) {
     if (!results || results.length === 0) {
       return Promise.resolve({ status: true });
     }
 
-    // Update ทีละตัว (ใช้ Promise.all สำหรับ parallel)
     var updates = results.map(function(r) {
-      var updateData = { cert_status: r.status || 'exported' };
-      if (r.driveFileId) updateData.drive_file_id = r.driveFileId;
-      if (r.driveUrl) updateData.drive_url = r.driveUrl;
+      var updateData = { status: r.status || 'exported' };
+      if (r.driveUrl) updateData.drive_file_url = r.driveUrl;
+      if (r.driveFileUrl) updateData.drive_file_url = r.driveFileUrl;
 
       if (r.id) {
         return _getSupabase().from('records').update(updateData).eq('id', r.id);
-      } else if (r.rowIndex !== undefined) {
-        return _getSupabase().from('records').update(updateData)
-          .eq('template_id', AppState.activeTemplateId)
-          .eq('row_number', r.rowIndex);
       }
       return Promise.resolve();
     });
@@ -441,9 +402,6 @@ var api = {
       .catch(function(err) { return { status: false, message: err.message }; });
   },
 
-  /**
-   * อัปเดตสถานะ records
-   */
   updateRecordStatuses: function(updates) {
     return api.batchUpdateCertStatus(updates);
   },
@@ -451,15 +409,14 @@ var api = {
 
   // ═══════════════════════════════════════════════════════════════════════
   // 🎨 TEMPLATE MANAGEMENT — Supabase PostgREST
+  // DB columns: id, name, drive_file_id, elements, canvas_width,
+  //             canvas_height, number_prefix
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * รายการ template
-   */
   getTemplateList: function() {
     return _getSupabase()
       .from('templates')
-      .select('id, name, prefix, background_url, is_active')
+      .select('id, name, number_prefix, drive_file_id')
       .order('name')
       .then(function(response) {
         if (response.error) {
@@ -469,81 +426,85 @@ var api = {
           return {
             id: t.id,
             name: t.name,
-            prefix: t.prefix || '',
-            backgroundUrl: t.background_url || '',
-            isActive: t.is_active
+            prefix: t.number_prefix || '',
+            driveFileId: t.drive_file_id || ''
           };
         });
         return { status: true, templates: templates };
       });
   },
 
-  /**
-   * รายการ template พร้อมจำนวน records
-   */
   getTemplateListWithCounts: function() {
-    return _getSupabase()
-      .from('templates_with_counts')
-      .select('*')
-      .order('name')
-      .then(function(response) {
-        if (response.error) {
-          return { status: false, templates: [] };
-        }
-        var templates = (response.data || []).map(function(t) {
-          return {
-            id: t.id,
-            name: t.name,
-            prefix: t.prefix || '',
-            recordCount: t.record_count || 0,
-            backgroundUrl: t.background_url || '',
-            isActive: t.is_active
-          };
-        });
-        return { status: true, templates: templates };
-      });
-  },
-
-  /**
-   * สลับ template context
-   */
-  switchTemplateContext: function(templateId) {
+    // Use RPC switch_template_context is too heavy. Query templates + count separately.
     return _getSupabase()
       .from('templates')
-      .select('*')
-      .eq('id', templateId)
-      .single()
+      .select('id, name, number_prefix, drive_file_id')
+      .order('name')
       .then(function(response) {
         if (response.error) {
+          return { status: false, templates: [] };
+        }
+        var templates = response.data || [];
+
+        // Count records per template
+        var countPromises = templates.map(function(t) {
+          return _getSupabase()
+            .from('records')
+            .select('id', { count: 'exact', head: true })
+            .eq('template_id', t.id)
+            .then(function(r) {
+              return {
+                id: t.id,
+                name: t.name,
+                prefix: t.number_prefix || '',
+                recordCount: r.count || 0,
+                driveFileId: t.drive_file_id || ''
+              };
+            });
+        });
+
+        return Promise.all(countPromises).then(function(results) {
+          return { status: true, templates: results };
+        });
+      });
+  },
+
+  switchTemplateContext: function(templateId) {
+    // Use the DB RPC function
+    return _getSupabase()
+      .rpc('switch_template_context', { p_template_id: templateId })
+      .then(function(response) {
+        if (response.error) {
+          return { status: false, message: response.error.message || 'ไม่พบ template' };
+        }
+        var data = response.data;
+        if (!data || !data.config) {
           return { status: false, message: 'ไม่พบ template' };
         }
-        var t = response.data;
         return {
           status: true,
-          template: {
-            id: t.id,
-            name: t.name,
-            prefix: t.prefix || '',
-            config: t.config_json || null,
-            backgroundUrl: t.background_url || ''
-          }
+          template: data.config,
+          stats: data.stats,
+          records: data.data || [],
+          schools: data.schools || [],
+          total: data.total || 0
         };
       });
   },
 
-  /**
-   * บันทึก Template Config
-   */
   saveTemplateConfig: function(config) {
-    var templateId = config.id || config.templateId || AppState.activeTemplateId;
-    var name = config.name || config.templateName || 'Untitled';
-    var prefix = config.prefix || '';
+    // canvas.js ส่ง: { template_id, template_name, drive_file_id, elements,
+    //                  canvas_width, canvas_height, number_prefix }
+    var templateId = config.template_id || config.id || config.templateId || AppState.activeTemplateId;
+    var name = config.template_name || config.name || config.templateName || 'Template ไม่มีชื่อ';
 
     var dbData = {
       name: name,
-      prefix: prefix,
-      config_json: config,
-      background_url: config.backgroundUrl || config.background_url || ''
+      drive_file_id: config.drive_file_id || config.driveFileId || '',
+      elements: config.elements || '[]',
+      canvas_width: config.canvas_width || config.canvasWidth || 3508,
+      canvas_height: config.canvas_height || config.canvasHeight || 2480,
+      number_prefix: config.number_prefix || config.prefix || ''
     };
 
     if (templateId && templateId !== 'new') {
@@ -558,11 +519,10 @@ var api = {
           if (response.error) {
             return { status: false, message: response.error.message };
           }
-          return { status: true, message: 'บันทึก Template สำเร็จ', templateId: response.data.id };
+          return { status: true, message: 'บันทึก Template สำเร็จ', template_id: response.data.id, templateId: response.data.id };
         });
     } else {
       // Insert new
-      dbData.created_by = null;
       return _getSupabase().auth.getUser().then(function(userRes) {
         if (userRes.data && userRes.data.user) {
           dbData.created_by = userRes.data.user.id;
@@ -576,38 +536,27 @@ var api = {
             if (response.error) {
               return { status: false, message: response.error.message };
             }
-            return { status: true, message: 'สร้าง Template ใหม่สำเร็จ', templateId: response.data.id };
+            return { status: true, message: 'สร้าง Template ใหม่สำเร็จ', template_id: response.data.id, templateId: response.data.id };
           });
       });
     }
   },
 
-  /**
-   * โหลด Template Config
-   */
   loadTemplateConfig: function(templateId) {
     return api.switchTemplateContext(templateId);
   },
 
-  /**
-   * เปลี่ยนชื่อ Template
-   */
   renameTemplate: function(templateId, newName, newPrefix) {
     return _getSupabase()
       .from('templates')
-      .update({ name: newName, prefix: newPrefix || '' })
+      .update({ name: newName, number_prefix: newPrefix || '' })
       .eq('id', templateId)
       .then(function(response) {
-        if (response.error) {
-          return { status: false, message: response.error.message };
-        }
+        if (response.error) return { status: false, message: response.error.message };
         return { status: true, message: 'เปลี่ยนชื่อสำเร็จ' };
       });
   },
 
-  /**
-   * Duplicate Template
-   */
   duplicateTemplate: function(templateId, newName, newPrefix) {
     return _getSupabase()
       .from('templates')
@@ -615,55 +564,45 @@ var api = {
       .eq('id', templateId)
       .single()
       .then(function(response) {
-        if (response.error) {
-          return { status: false, message: response.error.message };
-        }
+        if (response.error) return { status: false, message: response.error.message };
         var original = response.data;
-        var newTemplate = {
+        var newTpl = {
           name: newName,
-          prefix: newPrefix || '',
-          config_json: original.config_json,
-          background_url: original.background_url
+          drive_file_id: original.drive_file_id,
+          elements: original.elements,
+          canvas_width: original.canvas_width,
+          canvas_height: original.canvas_height,
+          number_prefix: newPrefix || ''
         };
 
         return _getSupabase().auth.getUser().then(function(userRes) {
           if (userRes.data && userRes.data.user) {
-            newTemplate.created_by = userRes.data.user.id;
+            newTpl.created_by = userRes.data.user.id;
           }
           return _getSupabase()
             .from('templates')
-            .insert(newTemplate)
+            .insert(newTpl)
             .select()
             .single()
             .then(function(insertRes) {
-              if (insertRes.error) {
-                return { status: false, message: insertRes.error.message };
-              }
+              if (insertRes.error) return { status: false, message: insertRes.error.message };
               return { status: true, message: 'Duplicate สำเร็จ', templateId: insertRes.data.id };
             });
         });
       });
   },
 
-  /**
-   * ลบ Template
-   */
   deleteTemplate: function(templateId) {
     return _getSupabase()
       .from('templates')
       .delete()
       .eq('id', templateId)
       .then(function(response) {
-        if (response.error) {
-          return { status: false, message: response.error.message };
-        }
+        if (response.error) return { status: false, message: response.error.message };
         return { status: true, message: 'ลบ Template สำเร็จ' };
       });
   },
 
-  /**
-   * จำนวน records ของ template
-   */
   getTemplateNameCount: function(templateId) {
     return _getSupabase()
       .from('records')
@@ -679,9 +618,6 @@ var api = {
   // 📤 EXPORT & DRIVE — GAS Web App (Google Drive)
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * Helper: เรียก GAS Web App สำหรับ Drive operations
-   */
   _callGAS: function(action, params) {
     params = params || {};
     var body = { action: action };
@@ -689,7 +625,6 @@ var api = {
       if (params.hasOwnProperty(key)) body[key] = params[key];
     }
 
-    // ใส่ Supabase token ให้ GAS ตรวจสอบ
     return _getSupabase().auth.getSession().then(function(sessionRes) {
       if (sessionRes.data && sessionRes.data.session) {
         body.token = sessionRes.data.session.access_token;
@@ -731,7 +666,6 @@ var api = {
   },
 
   getImagePublicUrl: function(fileId) {
-    // Direct URL — ไม่ต้องเรียก GAS
     return Promise.resolve({
       status: true,
       url: 'https://drive.google.com/uc?export=view&id=' + fileId
@@ -739,11 +673,10 @@ var api = {
   },
 
   getUploadConfig: function(templateName) {
-    // ดึง Drive folder IDs จาก settings
     return _getSupabase()
       .from('settings')
       .select('key, value')
-      .in('key', ['drive_root_folder_id', 'drive_templates_folder_id', 'drive_generated_folder_id', 'drive_zip_folder_id'])
+      .in('key', ['drive_root_folder', 'drive_template_folder', 'drive_export_folder', 'drive_zip_folder'])
       .then(function(response) {
         var config = {};
         (response.data || []).forEach(function(s) {
@@ -753,10 +686,10 @@ var api = {
           status: true,
           config: {
             templateName: templateName,
-            rootFolderId: config.drive_root_folder_id || '',
-            templatesFolderId: config.drive_templates_folder_id || '',
-            generatedFolderId: config.drive_generated_folder_id || '',
-            zipFolderId: config.drive_zip_folder_id || ''
+            rootFolderId: config.drive_root_folder || '',
+            templatesFolderId: config.drive_template_folder || '',
+            generatedFolderId: config.drive_export_folder || '',
+            zipFolderId: config.drive_zip_folder || ''
           }
         };
       });
@@ -767,38 +700,29 @@ var api = {
   // 📊 DASHBOARD & SETTINGS — Supabase
   // ═══════════════════════════════════════════════════════════════════════
 
-  /**
-   * สถิติ Dashboard
-   */
   getStats: function() {
     var templateId = AppState.activeTemplateId;
 
-    return Promise.all([
-      // Total records
-      _getSupabase().from('records').select('id', { count: 'exact', head: true })
-        .eq('template_id', templateId),
-      // Exported count
-      _getSupabase().from('records').select('id', { count: 'exact', head: true })
-        .eq('template_id', templateId).eq('cert_status', 'exported'),
-      // Templates count
-      _getSupabase().from('templates').select('id', { count: 'exact', head: true })
-    ])
-    .then(function(results) {
-      return {
-        status: true,
-        stats: {
-          totalRecords: results[0].count || 0,
-          exportedRecords: results[1].count || 0,
-          pendingRecords: (results[0].count || 0) - (results[1].count || 0),
-          totalTemplates: results[2].count || 0
+    return _getSupabase()
+      .rpc('get_dashboard_stats', { p_template_id: templateId || null })
+      .then(function(response) {
+        if (response.error) {
+          return { status: true, stats: { totalRecords: 0, exportedRecords: 0, pendingRecords: 0, totalTemplates: 0 } };
         }
-      };
-    });
+        var d = response.data || {};
+        return {
+          status: true,
+          stats: {
+            totalRecords: d.total || 0,
+            exportedRecords: d.exported || 0,
+            pendingRecords: d.pending || 0,
+            generatedRecords: d.generated || 0,
+            totalTemplates: d.templates || 0
+          }
+        };
+      });
   },
 
-  /**
-   * กิจกรรมล่าสุด
-   */
   getRecentActivity: function() {
     return _getSupabase()
       .from('export_logs')
@@ -808,27 +732,25 @@ var api = {
       .then(function(response) {
         var activities = (response.data || []).map(function(log) {
           return {
+            id: log.id,
             timestamp: log.created_at,
             action: log.action || 'export',
-            description: log.description || '',
-            details: log.details || ''
+            description: log.note || '',
+            username: log.username || '',
+            recordCount: log.record_count || 0,
+            status: log.status || 'success'
           };
         });
         return { status: true, activities: activities };
       });
   },
 
-  /**
-   * ดึง Settings
-   */
   getSettings: function() {
     return _getSupabase()
       .from('settings')
       .select('key, value')
       .then(function(response) {
-        if (response.error) {
-          return { status: false, settings: {} };
-        }
+        if (response.error) return { status: false, settings: {} };
         var settings = {};
         (response.data || []).forEach(function(s) {
           settings[s.key] = s.value;
@@ -837,9 +759,6 @@ var api = {
       });
   },
 
-  /**
-   * อัปเดต Settings
-   */
   updateSettings: function(settingsObj) {
     var upserts = Object.keys(settingsObj).map(function(key) {
       return { key: key, value: settingsObj[key] };
@@ -849,16 +768,11 @@ var api = {
       .from('settings')
       .upsert(upserts, { onConflict: 'key' })
       .then(function(response) {
-        if (response.error) {
-          return { status: false, message: response.error.message };
-        }
+        if (response.error) return { status: false, message: response.error.message };
         return { status: true, message: 'บันทึกการตั้งค่าสำเร็จ' };
       });
   },
 
-  /**
-   * ประวัติ Export
-   */
   getExportHistory: function() {
     return _getSupabase()
       .from('export_logs')
@@ -873,24 +787,21 @@ var api = {
               id: log.id,
               timestamp: log.created_at,
               action: log.action,
-              description: log.description,
-              templateName: log.template_name,
-              totalFiles: log.total_files,
-              details: log.details
+              description: log.note,
+              username: log.username,
+              totalFiles: log.record_count,
+              status: log.status
             };
           })
         };
       });
   },
 
-  /**
-   * ล้างประวัติ Export
-   */
   clearExportHistory: function() {
     return _getSupabase()
       .from('export_logs')
       .delete()
-      .neq('id', '00000000-0000-0000-0000-000000000000') // delete all
+      .neq('id', '00000000-0000-0000-0000-000000000000')
       .then(function() {
         return { status: true, message: 'ล้างประวัติสำเร็จ' };
       });
@@ -898,20 +809,27 @@ var api = {
 
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 🌐 PUBLIC / GUEST — Supabase RPC (anon)
+  // 🌐 PUBLIC / GUEST — Supabase RPC
   // ═══════════════════════════════════════════════════════════════════════
 
   guestSearchCertificates: function(searchName, templateId) {
     return _getSupabase()
       .rpc('guest_search_certificates', {
-        search_name: searchName,
-        search_template_id: templateId || null
+        p_search_name: searchName,
+        p_template_id: templateId || null
       })
       .then(function(response) {
         if (response.error) {
           return { status: false, results: [], message: response.error.message };
         }
-        return { status: true, results: response.data || [] };
+        // RPC returns JSON object with status, results, total
+        var data = response.data || {};
+        return {
+          status: data.status !== undefined ? data.status : true,
+          results: data.results || [],
+          total: data.total || 0,
+          message: data.message || ''
+        };
       });
   },
 
@@ -922,40 +840,46 @@ var api = {
         if (response.error) {
           return { status: false, templates: [] };
         }
-        return { status: true, templates: response.data || [] };
+        var data = response.data || {};
+        return {
+          status: data.status !== undefined ? data.status : true,
+          templates: data.templates || []
+        };
       });
   },
 
 
   // ═══════════════════════════════════════════════════════════════════════
-  // 🔧 DIAGNOSTIC — Local
+  // 🔧 DIAGNOSTIC
   // ═══════════════════════════════════════════════════════════════════════
 
   diagnoseCertSystem: function() {
-    return Promise.all([
-      _getSupabase().from('templates').select('id', { count: 'exact', head: true }),
-      _getSupabase().from('records').select('id', { count: 'exact', head: true }),
-      _getSupabase().from('settings').select('key, value').eq('key', 'version')
-    ])
-    .then(function(results) {
-      var version = results[2].data && results[2].data[0] ? results[2].data[0].value : 'unknown';
-      return {
-        status: true,
-        diagnostics: {
-          supabaseConnected: true,
-          templatesCount: results[0].count || 0,
-          recordsCount: results[1].count || 0,
-          version: version,
-          timestamp: new Date().toISOString()
+    return _getSupabase()
+      .rpc('health_check')
+      .then(function(response) {
+        if (response.error) {
+          return {
+            status: false,
+            diagnostics: { supabaseConnected: false, error: response.error.message }
+          };
         }
-      };
-    })
-    .catch(function(err) {
-      return {
-        status: false,
-        diagnostics: { supabaseConnected: false, error: err.message }
-      };
-    });
+        var data = response.data || {};
+        return {
+          status: true,
+          diagnostics: {
+            supabaseConnected: true,
+            version: data.version || 'unknown',
+            tables: data.tables || {},
+            timestamp: data.timestamp || new Date().toISOString()
+          }
+        };
+      })
+      .catch(function(err) {
+        return {
+          status: false,
+          diagnostics: { supabaseConnected: false, error: err.message }
+        };
+      });
   }
 };
 
@@ -965,65 +889,63 @@ var api = {
 // ═══════════════════════════════════════════════════════════════════════
 
 /**
- * Map DB record → old format (ที่ core.js/export.js คาดหวัง)
+ * Map DB record → frontend format (backward compatible with core.js/export.js)
+ * DB: id, template_id, name, school, cert_number, cert_date, signer, position,
+ *     extra1-5, status, drive_file_url
  */
 function _mapRecordFromDb(row, idx) {
   return {
-    rowIndex: idx !== undefined ? idx : row.row_number,
+    rowIndex: idx !== undefined ? idx : 0,
     id: row.id,
     recordId: row.id,
-    prefixNumber: row.prefix_number || '',
-    name: row.full_name || '',
-    fullName: row.full_name || '',
-    school: row.school_name || '',
-    schoolName: row.school_name || '',
+    templateId: row.template_id,
+    name: row.name || '',
+    fullName: row.name || '',
+    school: row.school || '',
+    schoolName: row.school || '',
     certNumber: row.cert_number || '',
-    certStatus: row.cert_status || '',
-    driveFileId: row.drive_file_id || '',
-    driveUrl: row.drive_url || '',
-    extra1: row.extra_field_1 || '',
-    extra2: row.extra_field_2 || '',
-    extra3: row.extra_field_3 || '',
+    certDate: row.cert_date || '',
+    signer: row.signer || '',
+    position: row.position || '',
+    extra1: row.extra1 || '',
+    extra2: row.extra2 || '',
+    extra3: row.extra3 || '',
+    extra4: row.extra4 || '',
+    extra5: row.extra5 || '',
+    status: row.status || 'pending',
+    certStatus: row.status || 'pending',
+    driveFileUrl: row.drive_file_url || '',
+    driveUrl: row.drive_file_url || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at
   };
 }
 
 /**
- * Map old format → DB record
+ * Map frontend format → DB record
  */
 function _mapRecordToDb(record) {
   var db = {};
-  if (record.prefixNumber !== undefined) db.prefix_number = record.prefixNumber;
-  if (record.name !== undefined) db.full_name = record.name;
-  if (record.fullName !== undefined) db.full_name = record.fullName;
-  if (record.school !== undefined) db.school_name = record.school;
-  if (record.schoolName !== undefined) db.school_name = record.schoolName;
+  if (record.name !== undefined) db.name = record.name;
+  if (record.fullName !== undefined) db.name = record.fullName;
+  if (record.school !== undefined) db.school = record.school;
+  if (record.schoolName !== undefined) db.school = record.schoolName;
   if (record.certNumber !== undefined) db.cert_number = record.certNumber;
-  if (record.certStatus !== undefined) db.cert_status = record.certStatus;
-  if (record.driveFileId !== undefined) db.drive_file_id = record.driveFileId;
-  if (record.driveUrl !== undefined) db.drive_url = record.driveUrl;
-  if (record.extra1 !== undefined) db.extra_field_1 = record.extra1;
-  if (record.extra2 !== undefined) db.extra_field_2 = record.extra2;
-  if (record.extra3 !== undefined) db.extra_field_3 = record.extra3;
-  if (record.rowNumber !== undefined) db.row_number = record.rowNumber;
+  if (record.cert_number !== undefined) db.cert_number = record.cert_number;
+  if (record.certDate !== undefined) db.cert_date = record.certDate;
+  if (record.cert_date !== undefined) db.cert_date = record.cert_date;
+  if (record.signer !== undefined) db.signer = record.signer;
+  if (record.position !== undefined) db.position = record.position;
+  if (record.extra1 !== undefined) db.extra1 = record.extra1;
+  if (record.extra2 !== undefined) db.extra2 = record.extra2;
+  if (record.extra3 !== undefined) db.extra3 = record.extra3;
+  if (record.extra4 !== undefined) db.extra4 = record.extra4;
+  if (record.extra5 !== undefined) db.extra5 = record.extra5;
+  if (record.status !== undefined) db.status = record.status;
+  if (record.certStatus !== undefined) db.status = record.certStatus;
+  if (record.driveFileUrl !== undefined) db.drive_file_url = record.driveFileUrl;
+  if (record.driveUrl !== undefined) db.drive_file_url = record.driveUrl;
   return db;
-}
-
-/**
- * Log login activity
- */
-function _logLoginActivity(userId, username) {
-  _getSupabase()
-    .from('login_logs')
-    .insert({
-      user_id: userId,
-      action: 'login',
-      ip_address: null,
-      user_agent: navigator.userAgent.substring(0, 255)
-    })
-    .then(function() {})
-    .catch(function() {}); // Silent — don't block login
 }
 
 
@@ -1034,7 +956,6 @@ if (typeof Proxy !== 'undefined') {
   api = new Proxy(api, {
     get: function(target, prop) {
       if (prop in target) return target[prop];
-      // Dynamic method: ถ้ายังไม่มี → ลอง GAS
       return function() {
         var args = Array.prototype.slice.call(arguments);
         console.warn('api.' + prop + '() — ไม่มีใน Supabase, fallback to GAS');
