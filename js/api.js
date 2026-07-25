@@ -552,22 +552,8 @@ var api = {
       number_prefix: config.number_prefix || config.prefix || ''
     };
 
-    if (templateId && templateId !== 'new') {
-      // Update existing
-      return _getSupabase()
-        .from('templates')
-        .update(dbData)
-        .eq('id', templateId)
-        .select()
-        .single()
-        .then(function(response) {
-          if (response.error) {
-            return { status: false, message: response.error.message };
-          }
-          return { status: true, message: 'บันทึก Template สำเร็จ', template_id: response.data.id, templateId: response.data.id };
-        });
-    } else {
-      // Insert new
+    // Helper: สร้าง template ใหม่
+    function _insertNew() {
       return _getSupabase().auth.getUser().then(function(userRes) {
         if (userRes.data && userRes.data.user) {
           dbData.created_by = userRes.data.user.id;
@@ -584,6 +570,31 @@ var api = {
             return { status: true, message: 'สร้าง Template ใหม่สำเร็จ', template_id: response.data.id, templateId: response.data.id };
           });
       });
+    }
+
+    if (templateId && templateId !== 'new') {
+      // Try update existing — ถ้า template ID ไม่มีใน DB จะ fallback เป็น INSERT
+      return _getSupabase()
+        .from('templates')
+        .update(dbData)
+        .eq('id', templateId)
+        .select()
+        .then(function(response) {
+          if (response.error) {
+            // Update failed → try insert
+            console.warn('Template update failed, creating new:', response.error.message);
+            return _insertNew();
+          }
+          if (!response.data || response.data.length === 0) {
+            // Template ID ไม่มีใน DB (stale ID) → สร้างใหม่
+            console.warn('Template ID not found in DB, creating new');
+            return _insertNew();
+          }
+          var row = response.data[0];
+          return { status: true, message: 'บันทึก Template สำเร็จ', template_id: row.id, templateId: row.id };
+        });
+    } else {
+      return _insertNew();
     }
   },
 
