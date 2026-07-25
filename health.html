@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>🏥 System Health Check</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🏥</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --primary: #3ECF8E;
+      --primary-dark: #2B9B6A;
+      --bg: #1A1A2E;
+      --bg-card: #16213E;
+      --bg-card-2: #0F3460;
+      --text: #E8E8E8;
+      --text-muted: #8892B0;
+      --border: #233554;
+      --success: #3ECF8E;
+      --warning: #F59E0B;
+      --danger: #EF4444;
+      --info: #3B82F6;
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      font-family: 'Sarabun', sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .health-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 40px;
+      max-width: 500px;
+      width: 100%;
+      text-align: center;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.3);
+    }
+
+    .health-icon {
+      font-size: 64px;
+      margin-bottom: 16px;
+      display: block;
+    }
+
+    h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+      margin-bottom: 8px;
+    }
+
+    .subtitle {
+      color: var(--text-muted);
+      font-size: 14px;
+      margin-bottom: 24px;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+
+    .status-item {
+      background: var(--bg-card-2);
+      border-radius: 10px;
+      padding: 16px;
+      text-align: center;
+    }
+
+    .status-item .label {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+
+    .status-item .value {
+      font-size: 18px;
+      font-weight: 600;
+    }
+
+    .status-item .value.ok { color: var(--success); }
+    .status-item .value.error { color: var(--danger); }
+    .status-item .value.loading { color: var(--warning); }
+
+    .status-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 20px;
+      border-radius: 30px;
+      font-size: 14px;
+      font-weight: 600;
+      margin-bottom: 20px;
+    }
+
+    .status-badge.ok {
+      background: rgba(62, 207, 142, 0.15);
+      color: var(--success);
+      border: 1px solid rgba(62, 207, 142, 0.3);
+    }
+
+    .status-badge.error {
+      background: rgba(239, 68, 68, 0.15);
+      color: var(--danger);
+      border: 1px solid rgba(239, 68, 68, 0.3);
+    }
+
+    .status-badge.loading {
+      background: rgba(245, 158, 11, 0.15);
+      color: var(--warning);
+      border: 1px solid rgba(245, 158, 11, 0.3);
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      display: inline-block;
+    }
+
+    .dot.ok { background: var(--success); box-shadow: 0 0 8px var(--success); }
+    .dot.error { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+    .dot.loading {
+      background: var(--warning);
+      animation: pulse 1s ease-in-out infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 0.4; }
+      50% { opacity: 1; }
+    }
+
+    .btn-check {
+      padding: 12px 28px;
+      background: linear-gradient(135deg, var(--primary-dark), var(--primary));
+      color: #FFF;
+      border: none;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      font-family: 'Sarabun', sans-serif;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .btn-check:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 4px 16px rgba(62, 207, 142, 0.3);
+    }
+
+    .btn-check:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none;
+    }
+
+    .last-check {
+      margin-top: 16px;
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .footer-note {
+      margin-top: 24px;
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+    }
+
+    .footer-note a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+  </style>
+</head>
+<body>
+
+<div class="health-card">
+  <span class="health-icon" id="mainIcon">🏥</span>
+  <h1>System Health Check</h1>
+  <p class="subtitle">ระบบสร้างเกียรติบัตร — Supabase Status</p>
+
+  <div class="status-badge loading" id="statusBadge">
+    <span class="dot loading" id="statusDot"></span>
+    <span id="statusText">กำลังตรวจสอบ...</span>
+  </div>
+
+  <div class="status-grid">
+    <div class="status-item">
+      <div class="label">Database</div>
+      <div class="value loading" id="dbStatus">—</div>
+    </div>
+    <div class="status-item">
+      <div class="label">REST API</div>
+      <div class="value loading" id="apiStatus">—</div>
+    </div>
+    <div class="status-item">
+      <div class="label">Templates</div>
+      <div class="value" id="tplCount">—</div>
+    </div>
+    <div class="status-item">
+      <div class="label">Records</div>
+      <div class="value" id="recCount">—</div>
+    </div>
+  </div>
+
+  <button class="btn-check" id="btnCheck" onclick="runHealthCheck()">
+    🔄 ตรวจสอบอีกครั้ง
+  </button>
+
+  <div class="last-check" id="lastCheck"></div>
+
+  <div class="footer-note">
+    หน้านี้ใช้สำหรับ Keep-Alive — ป้องกัน Supabase Free Tier Pause<br>
+    ตั้ง <a href="https://uptimerobot.com" target="_blank">UptimeRobot</a>
+    ให้ ping URL นี้ทุก 5 วัน
+  </div>
+</div>
+
+<script src="js/config.js"></script>
+<script>
+  // ═══════════════════════════════════════════════════════════════════
+  // ใช้ config จาก js/config.js (ไม่ต้อง hardcode ซ้ำ)
+  // ═══════════════════════════════════════════════════════════════════
+  var SUPABASE_URL = APP_CONFIG.SUPABASE_URL;
+  var SUPABASE_ANON_KEY = APP_CONFIG.SUPABASE_ANON_KEY;
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Auto-run on page load
+  // ═══════════════════════════════════════════════════════════════════
+  document.addEventListener('DOMContentLoaded', function() {
+    runHealthCheck();
+  });
+
+  function runHealthCheck() {
+    var btn = document.getElementById('btnCheck');
+    btn.disabled = true;
+    btn.textContent = '⏳ กำลังตรวจสอบ...';
+
+    setStatus('loading', 'กำลังตรวจสอบ...');
+    document.getElementById('dbStatus').textContent = '⏳';
+    document.getElementById('dbStatus').className = 'value loading';
+    document.getElementById('apiStatus').textContent = '⏳';
+    document.getElementById('apiStatus').className = 'value loading';
+
+    var checks = { api: false, db: false, data: null };
+
+    // 1. Check REST API
+    fetch(SUPABASE_URL + '/rest/v1/', {
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY
+      }
+    })
+    .then(function(r) {
+      checks.api = r.ok;
+      document.getElementById('apiStatus').textContent = r.ok ? '✅ OK' : '❌ ' + r.status;
+      document.getElementById('apiStatus').className = 'value ' + (r.ok ? 'ok' : 'error');
+    })
+    .catch(function() {
+      document.getElementById('apiStatus').textContent = '❌ Error';
+      document.getElementById('apiStatus').className = 'value error';
+    });
+
+    // 2. Check Database via health_check() RPC
+    fetch(SUPABASE_URL + '/rest/v1/rpc/health_check', {
+      method: 'POST',
+      headers: {
+        'apikey': SUPABASE_ANON_KEY,
+        'Authorization': 'Bearer ' + SUPABASE_ANON_KEY,
+        'Content-Type': 'application/json'
+      },
+      body: '{}'
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+      checks.db = true;
+      checks.data = data;
+
+      document.getElementById('dbStatus').textContent = '✅ OK';
+      document.getElementById('dbStatus').className = 'value ok';
+
+      if (data && data.tables) {
+        document.getElementById('tplCount').textContent = data.tables.templates || 0;
+        document.getElementById('recCount').textContent = data.tables.records || 0;
+      }
+
+      setStatus('ok', '✅ ระบบทำงานปกติ');
+      document.getElementById('mainIcon').textContent = '✅';
+    })
+    .catch(function(err) {
+      document.getElementById('dbStatus').textContent = '❌ Error';
+      document.getElementById('dbStatus').className = 'value error';
+      setStatus('error', '❌ ไม่สามารถเชื่อมต่อ');
+      document.getElementById('mainIcon').textContent = '❌';
+    })
+    .finally(function() {
+      btn.disabled = false;
+      btn.textContent = '🔄 ตรวจสอบอีกครั้ง';
+
+      var now = new Date();
+      document.getElementById('lastCheck').textContent =
+        'ตรวจสอบล่าสุด: ' + now.toLocaleString('th-TH');
+    });
+  }
+
+  function setStatus(type, text) {
+    var badge = document.getElementById('statusBadge');
+    var dot = document.getElementById('statusDot');
+    var statusText = document.getElementById('statusText');
+
+    badge.className = 'status-badge ' + type;
+    dot.className = 'dot ' + type;
+    statusText.textContent = text;
+  }
+</script>
+
+</body>
+</html>
